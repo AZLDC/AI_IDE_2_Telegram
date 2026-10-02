@@ -1,0 +1,13 @@
+# Secrets and local config
+config.json
+
+# Runtime state
+local_prompt.txt
+notify_*.state
+notify_*.lock
+notify_*.err
+__pycache__/
+*.pyc
+.ruff_cache/
+.scratch/
+graphify-out/

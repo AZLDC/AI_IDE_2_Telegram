@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "__PYTHON__ -u __PROJECT__/cursor_hooks/ai_status_notify.py",
+        "timeout": 15
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "__PYTHON__ -u __PROJECT__/cursor_hooks/ai_status_notify.py",
+        "timeout": 15
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "__PYTHON__ -u __PROJECT__/cursor_hooks/ai_status_notify.py",
+        "timeout": 15
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "__PYTHON__ -u __PROJECT__/cursor_hooks/ai_status_notify.py",
+        "timeout": 15,
+        "matcher": "Write|StrReplace|Delete|EditNotebook"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "__PYTHON__ -u __PROJECT__/cursor_hooks/ai_status_notify.py",
+        "timeout": 15
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "__PYTHON__ -u __PROJECT__/cursor_hooks/ai_status_notify.py",
+        "timeout": 15
+      }
+    ]
+  }
+}

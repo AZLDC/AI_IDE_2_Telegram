@@ -1,0 +1,11 @@
+{
+  "token": "##########:**************************************",
+  "chat_id": "##########",
+  "coalesce_seconds": 10,
+  "auto_delete_seconds": 10,
+  "AI_testWait": "A.I.測試發送寫檔訊息.",
+  "AI_testDone": "A.I.測試發送完成訊息.",
+  "AI_wait": "A.I.正準備執行外部指令.",
+  "AI_fail": "A.I.執行指令失敗.",
+  "AI_done": "A.I.的工作已完成."
+}
