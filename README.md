@@ -30,12 +30,10 @@
    - 不要依賴已過期、寫死舊路徑的 `~/.cursor/hooks/ai_status_notify.py` 複本；以專案內檔案為準。
 
 4. **本機小窗**  
-   用同一個 Python（Windows 可用 `pythonw`）啟動專案根目錄的 `status_prompt.pyw`，並保持在跑。
+   用同一個 Python（Windows 可用 `pythonw`）啟動專案根目錄的 `status_prompt.pyw`，並保持在跑。小窗需要套件時先裝：`python -m pip install Pillow pystray`（入口以步驟 1 為準）。
 
-5. **驗證**  
-   使用者要求測試時才執行：  
-   `<python> telegram_notify.py AI_testWait`／`AI_testDone`。  
-   平時不要主動打真實 Telegram。
+5. **結尾必做：實機測試**  
+   設定完成後**必須**執行測試（見文末「測試」）。失敗時依「測試失敗時」判斷原因，並指導使用者取得、填寫 `token` 與 `chat_id`。不要讀、印出真實 `config.json` 內容。
 
 ## 使用
 
@@ -51,8 +49,43 @@
 
 `telegram_notify.py message "額外訊息"`
 
-測試（使用者要求時才跑）：
+## 測試
 
-`telegram_notify.py AI_testWait`
+設定或變更完成後，用本機 Python 3 在專案根目錄執行（先 Wait 再 Done；收束後 Telegram 應出現測試完成文案）：
 
-`telegram_notify.py AI_testDone`
+`<python> telegram_notify.py AI_testWait`
+
+`<python> telegram_notify.py AI_testDone`
+
+等待約 `coalesce_seconds` 秒後，確認 Telegram 對話有收到訊息。若有開 `auto_delete_seconds`，再等該秒數後訊息可能被刪掉，屬正常。
+
+### 測試失敗時
+
+接手的 AI 必須依錯誤訊息判斷原因（可看終端輸出與專案根目錄是否出現 `notify_flush.err`；**仍禁止**開啟或轉述 `config.json`），並用白話告訴使用者怎麼處理。常見情況：
+
+| 現象 | 可能原因 | 怎麼辦 |
+|---|---|---|
+| 找不到設定檔／`config.json` | 尚未建立本機設定 | 請使用者複製 `config.example.json` 為 `config.json`，再填入下方兩項 |
+| `token`／`chat_id` 相關錯誤、Unauthorized、聊天找不到 | 權杖或對話識別碼錯誤、空白、仍是範例井字號 | 依下方教學重新取得並填入 |
+| 網路逾時、無法連線 | 本機網路或防火牆 | 檢查連網後重試 |
+| 指令本身失敗、找不到模組 | Python 路徑或工作目錄不對 | 確認在專案根目錄、用步驟 1 的 Python 執行 |
+
+### 使用者如何取得並填寫 `token` 與 `chat_id`
+
+AI 只指導步驟，由使用者自己操作與貼上；不要代填、不要讀回寫入後的真實值。
+
+1. **取得 `token`（機器人權杖）**  
+   - 在 Telegram 搜尋並開啟 [@BotFather](https://t.me/BotFather)。  
+   - 傳送 `/newbot`（已有機器人可用 `/mybots` → API Token）。  
+   - 依提示設定名稱後，BotFather 會給一串類似 `123456789:AA...` 的權杖。  
+   - 使用者把這串貼進本機 `config.json` 的 `"token"` 欄（整段、不要加空格）。
+
+2. **取得 `chat_id`（對話識別碼）**  
+   - 先在 Telegram **開啟與該機器人的對話**，並對它送任意一則文字（例如 `hi`），否則系統還沒有這段對話。  
+   - 瀏覽器開啟（把 `<token>` 換成自己的權杖）：  
+     `https://api.telegram.org/bot<token>/getUpdates`  
+   - 在回傳的 JSON 裡找 `"chat":{"id": ...}`，那個數字（有時是負數，群組常見）就是 `chat_id`。  
+   - 貼進本機 `config.json` 的 `"chat_id"` 欄（只填數字，通常加引號成字串也可）。
+
+3. **存檔後重跑測試**  
+   再執行上面的 `AI_testWait`／`AI_testDone`。成功後才算設定完成。
