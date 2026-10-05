@@ -3,6 +3,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 def load_hook():
@@ -41,6 +42,13 @@ class HookStatusMappingTests(unittest.TestCase):
         marker = self.hook.MARKER
         marker.unlink(missing_ok=True)
         self.assertEqual(self.hook.status_for("stop", {"status": "completed"}), "AI_done")
+
+    @patch("subprocess.Popen")
+    def test_spawn_identifies_cursor(self, popen_mock) -> None:
+        self.hook.spawn("AI_wait")
+
+        command = popen_mock.call_args.args[0]
+        self.assertEqual(command[command.index("--ide") + 1], "Cursor")
 
 
 if __name__ == "__main__":

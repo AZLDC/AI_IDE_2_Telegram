@@ -40,12 +40,13 @@ def push_status(
     prompt_file: str | Path,
     status: telegram_notify.Status,
     when: float | None = None,
+    ide: telegram_notify.IDE = "CLI",
 ) -> None:
     """Resolve the status text and publish it at once."""
     config = telegram_notify.load_config(str(config_file))
     write_prompt(
         Path(prompt_file),
         status,
-        config.message_for(status),
+        config.message_for(status, ide=ide),
         time.time() if when is None else when,
     )

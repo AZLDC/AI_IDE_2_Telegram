@@ -47,6 +47,22 @@ class TelegramNotifyTests(unittest.TestCase):
         self.assertEqual(config.coalesce_seconds, 10.0)
         self.assertEqual(config.auto_delete_seconds, 0.0)
 
+    def test_reserved_strings_render_platform_and_ide(self) -> None:
+        data = dict(SAMPLE_CONFIG)
+        data["AI_done"] = "{platform}上的{IDE} A.I.的工作已完成."
+        config = telegram_notify.load_config(self.write_config(data))
+
+        self.assertEqual(
+            config.message_for("AI_done", ide="Codex", platform_name="Windows"),
+            "Windows上的Codex A.I.的工作已完成.",
+        )
+
+    def test_unknown_reserved_string_is_preserved(self) -> None:
+        self.assertEqual(
+            telegram_notify.render_message("{unknown}-{IDE}", "Cursor", "Mac"),
+            "{unknown}-Cursor",
+        )
+
     def test_missing_fail_field_uses_default(self) -> None:
         data = dict(SAMPLE_CONFIG)
         del data["AI_fail"]
@@ -376,6 +392,23 @@ class NotifyBatchTests(unittest.TestCase):
 
         self.assertEqual(sends, [(12, "AI_testDone")])
 
+    def test_latest_ide_is_kept_with_coalesced_status(self) -> None:
+        first = telegram_notify.submit_status(
+            self.state_dir, "AI_wait", ide="Cursor", now=0
+        )
+        telegram_notify.submit_status(
+            self.state_dir, "AI_done", ide="Codex", now=1
+        )
+
+        ready = telegram_notify.take_ready_notification(
+            self.state_dir, first.token, now=11
+        )
+
+        self.assertEqual(
+            ready,
+            telegram_notify.PendingStatus("AI_done", "Codex"),
+        )
+
     def test_last_status_wins_when_both_statuses_share_a_window(self) -> None:
         sends = self.play([(0, "AI_done"), (1, "AI_wait"), (2, "AI_done")])
 
@@ -444,7 +477,7 @@ class NotifyBatchTests(unittest.TestCase):
 
         self.assertEqual(clock["now"], 10)
         notify_mock.assert_called_once_with(
-            config_file, "AI_done", state_dir=self.state_dir
+            config_file, "AI_done", ide="CLI", state_dir=self.state_dir
         )
 
     @patch("telegram_notify.notify")
@@ -500,7 +533,7 @@ class NotifyBatchTests(unittest.TestCase):
         )
 
         notify_mock.assert_called_once_with(
-            config_file, "AI_wait", state_dir=self.state_dir
+            config_file, "AI_wait", ide="CLI", state_dir=self.state_dir
         )
         self.assertEqual(clock["now"], 1011.0)
 
@@ -557,7 +590,7 @@ class NotifyBatchTests(unittest.TestCase):
         )
         self.assertEqual(clock["now"], 11.0)
         notify_mock.assert_called_once_with(
-            config_file, "AI_wait", state_dir=self.state_dir
+            config_file, "AI_wait", ide="CLI", state_dir=self.state_dir
         )
 
     def test_window_seconds_default_constant_is_ten(self) -> None:
@@ -596,7 +629,7 @@ class NotifyBatchTests(unittest.TestCase):
 
         self.assertEqual(clock["now"], 2)
         notify_mock.assert_called_once_with(
-            config_file, "AI_done", state_dir=self.state_dir
+            config_file, "AI_done", ide="CLI", state_dir=self.state_dir
         )
 
     def test_detached_flusher_is_not_waited_on(self) -> None:

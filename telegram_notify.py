@@ -16,18 +16,36 @@ if sys.platform == "win32":
 
 
 Status = Literal["AI_wait", "AI_fail", "AI_done", "AI_testWait", "AI_testDone"]
+IDE = Literal["CLI", "Codex", "Cursor"]
 Lane = Literal["real", "test"]
 WINDOW_SECONDS = 10.0
 REAL_STATUSES = ("AI_wait", "AI_fail", "AI_done")
 TEST_STATUSES = ("AI_testWait", "AI_testDone")
 STATUSES = REAL_STATUSES + TEST_STATUSES
 DEFAULT_MESSAGES = {
-    "AI_wait": "A.I.正準備執行外部指令.",
-    "AI_fail": "A.I.執行指令失敗.",
-    "AI_done": "A.I.的工作已完成.",
-    "AI_testWait": "A.I.測試發送寫檔訊息.",
-    "AI_testDone": "A.I.測試發送完成訊息.",
+    "AI_wait": "{platform}上的{IDE} A.I.正準備執行外部指令.",
+    "AI_fail": "{platform}上的{IDE} A.I.執行指令失敗.",
+    "AI_done": "{platform}上的{IDE} A.I.的工作已完成.",
+    "AI_testWait": "{platform}上的{IDE} A.I.測試發送寫檔訊息.",
+    "AI_testDone": "{platform}上的{IDE} A.I.測試發送完成訊息.",
 }
+
+
+def current_platform() -> str:
+    if sys.platform == "win32":
+        return "Windows"
+    if sys.platform == "darwin":
+        return "Mac"
+    if sys.platform.startswith("linux"):
+        return "Linux"
+    return sys.platform
+
+
+def render_message(template: str, ide: IDE, platform_name: str | None = None) -> str:
+    """Replace only the documented notification placeholders."""
+    return template.replace("{platform}", platform_name or current_platform()).replace(
+        "{IDE}", ide
+    )
 
 
 def _lane(status: Status) -> Lane:
@@ -48,8 +66,10 @@ class TelegramConfig:
     coalesce_seconds: float
     auto_delete_seconds: float
 
-    def message_for(self, status: Status) -> str:
-        return getattr(self, status)
+    def message_for(
+        self, status: Status, *, ide: IDE = "CLI", platform_name: str | None = None
+    ) -> str:
+        return render_message(getattr(self, status), ide, platform_name)
 
 
 def _parse_positive_seconds(data: dict, field: str, *, default: float) -> float:
@@ -171,13 +191,14 @@ def notify(
     config_file: str,
     status: Status,
     *,
+    ide: IDE = "CLI",
     state_dir: Path | None = None,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> None:
     config = load_config(config_file)
     message_id = send_message(
-        config.token, config.chat_id, config.message_for(status)
+        config.token, config.chat_id, config.message_for(status, ide=ide)
     )
     arm_auto_delete(
         config,
@@ -223,6 +244,13 @@ class _Batch:
     token: str
     deadline: float
     status: Status
+    ide: IDE
+
+
+@dataclass(frozen=True)
+class PendingStatus:
+    status: Status
+    ide: IDE
 
 
 @dataclass(frozen=True)
@@ -231,6 +259,7 @@ class SubmitResult:
     token: str
     deadline: float
     immediate: Status | None = None
+    immediate_ide: IDE = "CLI"
 
 
 class _FileLock:
@@ -281,15 +310,22 @@ def _read_batch(path: Path) -> _Batch | None:
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         return None
-    token, deadline, status = text.split()
+    values = text.split()
+    if len(values) == 3:
+        token, deadline, status = values
+        ide = "CLI"
+    else:
+        token, deadline, status, ide = values
     if status not in STATUSES:
         raise ValueError(f"無法辨認的通知狀態：{status}")
-    return _Batch(token, float(deadline), status)
+    if ide not in ("CLI", "Codex", "Cursor"):
+        raise ValueError(f"無法辨認的通知來源：{ide}")
+    return _Batch(token, float(deadline), status, ide)
 
 
 def _write_batch(path: Path, batch: _Batch) -> None:
     path.write_text(
-        f"{batch.token}\n{batch.deadline}\n{batch.status}\n",
+        f"{batch.token}\n{batch.deadline}\n{batch.status}\n{batch.ide}\n",
         encoding="utf-8",
     )
 
@@ -302,6 +338,7 @@ def submit_status(
     state_dir: Path,
     status: Status,
     *,
+    ide: IDE = "CLI",
     now: float,
     window: float = WINDOW_SECONDS,
 ) -> SubmitResult:
@@ -311,19 +348,31 @@ def submit_status(
         current = _read_batch(state_path)
         immediate = None
         if current is not None and now >= current.deadline:
-            immediate = current.status
+            immediate = PendingStatus(current.status, current.ide)
             _clear_batch(state_path)
             current = None
         if current is None:
-            batch = _Batch(uuid.uuid4().hex, now + window, status)
+            batch = _Batch(uuid.uuid4().hex, now + window, status, ide)
             _write_batch(state_path, batch)
-            return SubmitResult("leader", batch.token, batch.deadline, immediate)
-        batch = _Batch(current.token, now + window, status)
+            return SubmitResult(
+                "leader",
+                batch.token,
+                batch.deadline,
+                immediate.status if immediate else None,
+                immediate.ide if immediate else "CLI",
+            )
+        batch = _Batch(current.token, now + window, status, ide)
         _write_batch(state_path, batch)
-        return SubmitResult("follower", batch.token, batch.deadline, immediate)
+        return SubmitResult(
+            "follower",
+            batch.token,
+            batch.deadline,
+            immediate.status if immediate else None,
+            immediate.ide if immediate else "CLI",
+        )
 
 
-def _claim(state_dir: Path, lane: Lane, token: str, now: float) -> Status | None:
+def _claim(state_dir: Path, lane: Lane, token: str, now: float) -> PendingStatus | None:
     state_path, lock_path = _batch_paths(state_dir, lane)
     with _FileLock(lock_path):
         current = _read_batch(state_path)
@@ -332,16 +381,24 @@ def _claim(state_dir: Path, lane: Lane, token: str, now: float) -> Status | None
         if now < current.deadline:
             return None
         _clear_batch(state_path)
-        return current.status
+        return PendingStatus(current.status, current.ide)
 
 
-def take_ready(state_dir: Path, token: str, *, now: float) -> Status | None:
+def take_ready_notification(
+    state_dir: Path, token: str, *, now: float
+) -> PendingStatus | None:
     """Claim this window once its deadline has arrived."""
     for lane in ("real", "test"):
         ready = _claim(state_dir, lane, token, now)
         if ready is not None:
             return ready
     return None
+
+
+def take_ready(state_dir: Path, token: str, *, now: float) -> Status | None:
+    """Compatibility wrapper returning only the claimed status."""
+    ready = take_ready_notification(state_dir, token, now=now)
+    return ready.status if ready else None
 
 
 def _peek_deadline(state_dir: Path, token: str) -> float | None:
@@ -677,11 +734,11 @@ def flush_scheduled(
             if next_deadline > clock():
                 deadline = next_deadline
                 continue
-            ready = take_ready(state_dir, token, now=clock())
+            ready = take_ready_notification(state_dir, token, now=clock())
             if ready is None:
                 return
             try:
-                notify(config_file, ready, state_dir=state_dir)
+                notify(config_file, ready.status, ide=ready.ide, state_dir=state_dir)
             except Exception as error:
                 error_log.write_text(
                     f"{type(error).__name__}: {error}\n",
@@ -766,6 +823,7 @@ def deliver(
     config_file: str,
     status: Status,
     *,
+    ide: IDE = "CLI",
     state_dir: Path | None = None,
     window: float | None = None,
     clock: Callable[[], float] | None = None,
@@ -790,12 +848,17 @@ def deliver(
     write_prompt(
         directory / "local_prompt.txt",
         status,
-        config.message_for(status),
+        config.message_for(status, ide=ide),
         clock(),
     )
-    result = submit_status(directory, status, now=clock(), window=quiet)
+    result = submit_status(directory, status, ide=ide, now=clock(), window=quiet)
     if result.immediate is not None:
-        notify(config_file, result.immediate)
+        notify(
+            config_file,
+            result.immediate,
+            ide=result.immediate_ide,
+            state_dir=directory,
+        )
     if sleep is not None:
         if result.role == "leader":
             flush_scheduled(
@@ -835,6 +898,12 @@ def main() -> None:
         "--state-dir",
         default=str(Path(__file__).resolve().parent),
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--ide",
+        choices=("CLI", "Codex", "Cursor"),
+        default="CLI",
+        help="通知來源；Hook 會自動傳入 Codex 或 Cursor",
     )
     parser.add_argument("--token", default="", help=argparse.SUPPRESS)
     parser.add_argument("--deadline", type=float, default=0.0, help=argparse.SUPPRESS)
@@ -883,7 +952,7 @@ def main() -> None:
         parser.error(f"無法辨認的狀態：{args.status}")
     if args.text is not None:
         parser.error("狀態短名後面不要再跟文字；自由訊息請用 message")
-    deliver(args.config, args.status)
+    deliver(args.config, args.status, ide=args.ide)
 
 
 if __name__ == "__main__":

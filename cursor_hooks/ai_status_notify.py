@@ -84,7 +84,15 @@ def status_for(event: str, payload: dict) -> str | None:
 
 
 def spawn(status: str) -> None:
-    command = [sys.executable, str(TOOL), "--config", str(CONFIG), status]
+    command = [
+        sys.executable,
+        str(TOOL),
+        "--config",
+        str(CONFIG),
+        "--ide",
+        "Cursor",
+        status,
+    ]
     kwargs = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
