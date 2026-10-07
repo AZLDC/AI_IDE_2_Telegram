@@ -19,6 +19,7 @@ Status = Literal["AI_wait", "AI_fail", "AI_done", "AI_testWait", "AI_testDone"]
 IDE = Literal["CLI", "Codex", "Cursor"]
 Lane = Literal["real", "test"]
 WINDOW_SECONDS = 10.0
+UNKNOWN_PROJECT = "未知專案"
 REAL_STATUSES = ("AI_wait", "AI_fail", "AI_done")
 TEST_STATUSES = ("AI_testWait", "AI_testDone")
 STATUSES = REAL_STATUSES + TEST_STATUSES
@@ -41,10 +42,18 @@ def current_platform() -> str:
     return sys.platform
 
 
-def render_message(template: str, ide: IDE, platform_name: str | None = None) -> str:
+def render_message(
+    template: str,
+    ide: IDE,
+    platform_name: str | None = None,
+    *,
+    project: str = UNKNOWN_PROJECT,
+) -> str:
     """Replace only the documented notification placeholders."""
-    return template.replace("{platform}", platform_name or current_platform()).replace(
-        "{IDE}", ide
+    return (
+        template.replace("{platform}", platform_name or current_platform())
+        .replace("{IDE}", ide)
+        .replace("{project}", project or UNKNOWN_PROJECT)
     )
 
 
@@ -67,9 +76,16 @@ class TelegramConfig:
     auto_delete_seconds: float
 
     def message_for(
-        self, status: Status, *, ide: IDE = "CLI", platform_name: str | None = None
+        self,
+        status: Status,
+        *,
+        ide: IDE = "CLI",
+        project: str = UNKNOWN_PROJECT,
+        platform_name: str | None = None,
     ) -> str:
-        return render_message(getattr(self, status), ide, platform_name)
+        return render_message(
+            getattr(self, status), ide, platform_name, project=project
+        )
 
 
 def _parse_positive_seconds(data: dict, field: str, *, default: float) -> float:
@@ -192,13 +208,16 @@ def notify(
     status: Status,
     *,
     ide: IDE = "CLI",
+    project: str = UNKNOWN_PROJECT,
     state_dir: Path | None = None,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> None:
     config = load_config(config_file)
     message_id = send_message(
-        config.token, config.chat_id, config.message_for(status, ide=ide)
+        config.token,
+        config.chat_id,
+        config.message_for(status, ide=ide, project=project),
     )
     arm_auto_delete(
         config,
@@ -245,12 +264,14 @@ class _Batch:
     deadline: float
     status: Status
     ide: IDE
+    project: str
 
 
 @dataclass(frozen=True)
 class PendingStatus:
     status: Status
     ide: IDE
+    project: str = UNKNOWN_PROJECT
 
 
 @dataclass(frozen=True)
@@ -260,6 +281,7 @@ class SubmitResult:
     deadline: float
     immediate: Status | None = None
     immediate_ide: IDE = "CLI"
+    immediate_project: str = UNKNOWN_PROJECT
 
 
 class _FileLock:
@@ -310,22 +332,26 @@ def _read_batch(path: Path) -> _Batch | None:
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         return None
-    values = text.split()
+    values = text.splitlines()
     if len(values) == 3:
         token, deadline, status = values
         ide = "CLI"
-    else:
+        project = UNKNOWN_PROJECT
+    elif len(values) == 4:
         token, deadline, status, ide = values
+        project = UNKNOWN_PROJECT
+    else:
+        token, deadline, status, ide, project = values[:5]
     if status not in STATUSES:
         raise ValueError(f"無法辨認的通知狀態：{status}")
     if ide not in ("CLI", "Codex", "Cursor"):
         raise ValueError(f"無法辨認的通知來源：{ide}")
-    return _Batch(token, float(deadline), status, ide)
+    return _Batch(token, float(deadline), status, ide, project or UNKNOWN_PROJECT)
 
 
 def _write_batch(path: Path, batch: _Batch) -> None:
     path.write_text(
-        f"{batch.token}\n{batch.deadline}\n{batch.status}\n{batch.ide}\n",
+        f"{batch.token}\n{batch.deadline}\n{batch.status}\n{batch.ide}\n{batch.project}\n",
         encoding="utf-8",
     )
 
@@ -339,6 +365,7 @@ def submit_status(
     status: Status,
     *,
     ide: IDE = "CLI",
+    project: str = UNKNOWN_PROJECT,
     now: float,
     window: float = WINDOW_SECONDS,
 ) -> SubmitResult:
@@ -348,11 +375,11 @@ def submit_status(
         current = _read_batch(state_path)
         immediate = None
         if current is not None and now >= current.deadline:
-            immediate = PendingStatus(current.status, current.ide)
+            immediate = PendingStatus(current.status, current.ide, current.project)
             _clear_batch(state_path)
             current = None
         if current is None:
-            batch = _Batch(uuid.uuid4().hex, now + window, status, ide)
+            batch = _Batch(uuid.uuid4().hex, now + window, status, ide, project)
             _write_batch(state_path, batch)
             return SubmitResult(
                 "leader",
@@ -360,8 +387,9 @@ def submit_status(
                 batch.deadline,
                 immediate.status if immediate else None,
                 immediate.ide if immediate else "CLI",
+                immediate.project if immediate else UNKNOWN_PROJECT,
             )
-        batch = _Batch(current.token, now + window, status, ide)
+        batch = _Batch(current.token, now + window, status, ide, project)
         _write_batch(state_path, batch)
         return SubmitResult(
             "follower",
@@ -369,6 +397,7 @@ def submit_status(
             batch.deadline,
             immediate.status if immediate else None,
             immediate.ide if immediate else "CLI",
+            immediate.project if immediate else UNKNOWN_PROJECT,
         )
 
 
@@ -381,7 +410,7 @@ def _claim(state_dir: Path, lane: Lane, token: str, now: float) -> PendingStatus
         if now < current.deadline:
             return None
         _clear_batch(state_path)
-        return PendingStatus(current.status, current.ide)
+        return PendingStatus(current.status, current.ide, current.project)
 
 
 def take_ready_notification(
@@ -738,7 +767,13 @@ def flush_scheduled(
             if ready is None:
                 return
             try:
-                notify(config_file, ready.status, ide=ready.ide, state_dir=state_dir)
+                notify(
+                    config_file,
+                    ready.status,
+                    ide=ready.ide,
+                    project=ready.project,
+                    state_dir=state_dir,
+                )
             except Exception as error:
                 error_log.write_text(
                     f"{type(error).__name__}: {error}\n",
@@ -824,6 +859,7 @@ def deliver(
     status: Status,
     *,
     ide: IDE = "CLI",
+    project: str = UNKNOWN_PROJECT,
     state_dir: Path | None = None,
     window: float | None = None,
     clock: Callable[[], float] | None = None,
@@ -848,15 +884,23 @@ def deliver(
     write_prompt(
         directory / "local_prompt.txt",
         status,
-        config.message_for(status, ide=ide),
+        config.message_for(status, ide=ide, project=project),
         clock(),
     )
-    result = submit_status(directory, status, ide=ide, now=clock(), window=quiet)
+    result = submit_status(
+        directory,
+        status,
+        ide=ide,
+        project=project,
+        now=clock(),
+        window=quiet,
+    )
     if result.immediate is not None:
         notify(
             config_file,
             result.immediate,
             ide=result.immediate_ide,
+            project=result.immediate_project,
             state_dir=directory,
         )
     if sleep is not None:
@@ -905,6 +949,11 @@ def main() -> None:
         default="CLI",
         help="通知來源；Hook 會自動傳入 Codex 或 Cursor",
     )
+    parser.add_argument(
+        "--project",
+        default=Path.cwd().name or UNKNOWN_PROJECT,
+        help="專案名稱；Hook 會自動傳入工作目錄名稱",
+    )
     parser.add_argument("--token", default="", help=argparse.SUPPRESS)
     parser.add_argument("--deadline", type=float, default=0.0, help=argparse.SUPPRESS)
     parser.add_argument(
@@ -952,7 +1001,7 @@ def main() -> None:
         parser.error(f"無法辨認的狀態：{args.status}")
     if args.text is not None:
         parser.error("狀態短名後面不要再跟文字；自由訊息請用 message")
-    deliver(args.config, args.status, ide=args.ide)
+    deliver(args.config, args.status, ide=args.ide, project=args.project)
 
 
 if __name__ == "__main__":

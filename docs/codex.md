@@ -24,4 +24,4 @@ Codex 使用 `codex_hooks/ai_status_notify.py`，不可套用 Cursor 的小寫�
 
 不要設定 `SessionEnd`，避免結束工作階段時重複傳送完成通知。
 
-轉接器會自動加入 `--ide Codex`，讓 `{IDE}` 顯示為 `Codex`。共用設定與驗證方式見[共用設定與測試](common.md)。
+轉接器會自動加入 `--ide Codex`，讓 `{IDE}` 顯示為 `Codex`；並從 Codex Hook 的 `cwd` 取工作目錄名，讓 `{project}` 顯示目前專案。共用設定與驗證方式見[共用設定與測試](common.md)。

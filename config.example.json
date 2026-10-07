@@ -5,7 +5,7 @@
   "auto_delete_seconds": 10,
   "AI_testWait": "{platform}上的{IDE} A.I.測試發送寫檔訊息.",
   "AI_testDone": "{platform}上的{IDE} A.I.測試發送完成訊息.",
-  "AI_wait": "{platform}上的{IDE} A.I.正準備執行外部指令.",
-  "AI_fail": "{platform}上的{IDE} A.I.執行指令失敗.",
-  "AI_done": "{platform}上的{IDE} A.I.的工作已完成."
+  "AI_wait": "{platform}上 [{project}]的{IDE} A.I.正準備執行外部指令.",
+  "AI_fail": "{platform}上 [{project}]的{IDE} A.I.執行指令失敗.",
+  "AI_done": "{platform}上 [{project}]的{IDE} A.I.的工作已完成."
 }

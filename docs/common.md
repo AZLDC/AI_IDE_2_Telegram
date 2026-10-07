@@ -8,15 +8,16 @@ Windows 先執行 `py -0p` 與 `py -3 -V` 找出 Python 3 的 `python.exe` 絕�
 
 若沒有 `config.json`，由使用者複製 `config.example.json` 後自行填入 `token` 與 `chat_id`。AI 不得讀取、輸出或修改真實 `config.json`。
 
-通知文案支援兩個保留字串：
+通知文案支援三個保留字串：
 
 - `{platform}`：自動替換為 `Windows`、`Mac` 或 `Linux`。
 - `{IDE}`：Hook 會替換為 `Codex` 或 `Cursor`；直接執行命令時預設為 `CLI`。
+- `{project}`：Codex 使用 Hook `cwd` 的最後一層目錄名；Cursor 使用 `workspace_roots` 的第一個目錄名；直接執行時使用目前目錄名。無法取得時顯示 `未知專案`。
 
-只有以上兩個字串會被替換，其他大括號內容會保留原樣。例如：
+只有以上三個字串會被替換，其他大括號內容會保留原樣。例如：
 
 ```json
-"AI_done": "{platform}上的{IDE} A.I.的工作已完成."
+"AI_done": "{platform}上{project}的{IDE} A.I.的工作已完成."
 ```
 
 ## 本機小窗
@@ -59,5 +60,6 @@ Cursor 將上面的 `Codex` 改成 `Cursor`。等待約 `coalesce_seconds` 秒�
 | 網路逾時 | 檢查網路與防火牆後重試 |
 | 找不到模組或命令 | 確認工作目錄與 Python 絕對路徑 |
 | 文案仍出現 `{IDE}` | 確認 Hook 有傳入 `--ide Codex` 或 `--ide Cursor` |
+| 文案仍出現 `{project}` | 確認使用目前版本的 Hook 與 `telegram_notify.py` |
 
 取得 `chat_id` 前，先對 Telegram 機器人傳一則訊息，再由使用者自行開啟 `https://api.telegram.org/bot<token>/getUpdates`，找出 `"chat":{"id": ...}`。權杖與識別碼只能由使用者寫入本機 `config.json`。

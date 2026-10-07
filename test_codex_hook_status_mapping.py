@@ -40,10 +40,17 @@ class CodexHookStatusMappingTests(unittest.TestCase):
 
     @patch("subprocess.Popen")
     def test_spawn_identifies_codex(self, popen_mock):
-        self.hook.spawn("AI_wait")
+        self.hook.spawn("AI_wait", "AI狀態通知工具")
 
         command = popen_mock.call_args.args[0]
         self.assertEqual(command[command.index("--ide") + 1], "Codex")
+        self.assertEqual(command[command.index("--project") + 1], "AI狀態通知工具")
+
+    def test_project_name_comes_from_codex_cwd(self):
+        self.assertEqual(
+            self.hook.project_from_payload({"cwd": r"D:\interest\AI狀態通知工具"}),
+            "AI狀態通知工具",
+        )
 
     def test_post_tool_use_reports_only_failures(self):
         failures = (

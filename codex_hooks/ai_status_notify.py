@@ -68,7 +68,14 @@ def status_for(event: str, payload: dict[str, Any]) -> str | None:
     return None
 
 
-def spawn(status: str) -> None:
+def project_from_payload(payload: dict[str, Any]) -> str:
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        return Path(cwd).name or "未知專案"
+    return "未知專案"
+
+
+def spawn(status: str, project: str) -> None:
     command = [
         sys.executable,
         str(TOOL),
@@ -76,6 +83,8 @@ def spawn(status: str) -> None:
         str(CONFIG),
         "--ide",
         "Codex",
+        "--project",
+        project,
         status,
     ]
     kwargs: dict[str, Any] = {
@@ -100,7 +109,7 @@ def main() -> None:
     payload = read_payload()
     status = status_for(str(payload.get("hook_event_name") or ""), payload)
     if status and os.environ.get("AI_STATUS_NOTIFY_DRY") != "1":
-        spawn(status)
+        spawn(status, project_from_payload(payload))
     if os.environ.get("AI_STATUS_NOTIFY_DRY") == "1":
         print(f"STATUS={status or 'none'}", file=sys.stderr, flush=True)
 

@@ -45,10 +45,19 @@ class HookStatusMappingTests(unittest.TestCase):
 
     @patch("subprocess.Popen")
     def test_spawn_identifies_cursor(self, popen_mock) -> None:
-        self.hook.spawn("AI_wait")
+        self.hook.spawn("AI_wait", "AI狀態通知工具")
 
         command = popen_mock.call_args.args[0]
         self.assertEqual(command[command.index("--ide") + 1], "Cursor")
+        self.assertEqual(command[command.index("--project") + 1], "AI狀態通知工具")
+
+    def test_project_name_comes_from_first_workspace_root(self) -> None:
+        self.assertEqual(
+            self.hook.project_from_payload(
+                {"workspace_roots": [r"D:\interest\AI狀態通知工具"]}
+            ),
+            "AI狀態通知工具",
+        )
 
 
 if __name__ == "__main__":

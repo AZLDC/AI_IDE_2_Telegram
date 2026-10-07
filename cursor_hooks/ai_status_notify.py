@@ -83,7 +83,15 @@ def status_for(event: str, payload: dict) -> str | None:
     return None
 
 
-def spawn(status: str) -> None:
+def project_from_payload(payload: dict) -> str:
+    roots = payload.get("workspace_roots")
+    if isinstance(roots, list) and roots and isinstance(roots[0], str):
+        return Path(roots[0]).name or "未知專案"
+    project_dir = os.environ.get("CURSOR_PROJECT_DIR", "")
+    return Path(project_dir).name if project_dir else "未知專案"
+
+
+def spawn(status: str, project: str) -> None:
     command = [
         sys.executable,
         str(TOOL),
@@ -91,6 +99,8 @@ def spawn(status: str) -> None:
         str(CONFIG),
         "--ide",
         "Cursor",
+        "--project",
+        project,
         status,
     ]
     kwargs = {
@@ -129,7 +139,7 @@ def main() -> None:
     status = status_for(event, payload)
     dry_run = os.environ.get("AI_STATUS_NOTIFY_DRY") == "1"
     if status and not dry_run:
-        spawn(status)
+        spawn(status, project_from_payload(payload))
     if dry_run:
         print(f"STATUS={status or 'none'}", file=sys.stderr, flush=True)
     finish(event)

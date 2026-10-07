@@ -27,4 +27,4 @@ Cursor 使用 `cursor_hooks/ai_status_notify.py`，不可套用 Codex 的事件�
 | `subagentStart`、`subagentStop` | `AI_wait` |
 | `stop` | `AI_done` |
 
-轉接器會自動加入 `--ide Cursor`，讓 `{IDE}` 顯示為 `Cursor`。共用設定與驗證方式見[共用設定與測試](common.md)。
+轉接器會自動加入 `--ide Cursor`，讓 `{IDE}` 顯示為 `Cursor`；並從 Hook `workspace_roots` 的第一個路徑取目錄名，讓 `{project}` 顯示目前專案。共用設定與驗證方式見[共用設定與測試](common.md)。
