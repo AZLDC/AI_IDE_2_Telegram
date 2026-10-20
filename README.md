@@ -24,4 +24,4 @@ README.md
 - [Codex 專用設定](docs/codex.md)
 - [Cursor 專用設定](docs/cursor.md)
 
-通知文案可使用 `{project}` 顯示目前專案名稱。Codex 以 Hook 提供的工作目錄判定；Cursor 以第一個工作區根目錄判定。詳細規則見[共用設定與測試](docs/common.md)。
+通知文案可使用 `{project}` 顯示目前專案名稱。Codex 會由本專案的 Hook 程式自動解析工作區，並優先使用 Codex 桌面版的自訂專案名；Cursor 以第一個工作區根目錄判定。詳細規則見[共用設定與測試](docs/common.md)。

@@ -12,7 +12,7 @@ Windows 先執行 `py -0p` 與 `py -3 -V` 找出 Python 3 的 `python.exe` 絕�
 
 - `{platform}`：自動替換為 `Windows`、`Mac` 或 `Linux`。
 - `{IDE}`：Hook 會替換為 `Codex` 或 `Cursor`；直接執行命令時預設為 `CLI`。
-- `{project}`：Codex 使用 Hook `cwd` 的最後一層目錄名；Cursor 使用 `workspace_roots` 的第一個目錄名；直接執行時使用目前目錄名。無法取得時顯示 `未知專案`。
+- `{project}`：Codex 優先顯示桌面版的自訂專案名，找不到時改用工作區、Git 根目錄或工作目錄名；Cursor 使用 `workspace_roots` 的第一個目錄名；直接執行時使用目前目錄名。無法取得時顯示 `未知專案`。
 
 只有以上三個字串會被替換，其他大括號內容會保留原樣。例如：
 
