@@ -25,3 +25,5 @@ README.md
 - [Cursor 專用設定](docs/cursor.md)
 
 通知文案可使用 `{project}` 顯示目前專案名稱。Codex 會由本專案的 Hook 程式自動解析工作區，並優先使用 Codex 桌面版的自訂專案名；Cursor 以第一個工作區根目錄判定。詳細規則見[共用設定與測試](docs/common.md)。
+
+Telegram 狀態會立即送出第一則；相同平台、IDE 與狀態在 `coalesce_seconds` 內的重複通知會被忽略，而且不會延長冷卻時間。`AI_wait`、`AI_done`、`AI_fail` 等狀態各自計時。

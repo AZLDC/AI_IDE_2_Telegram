@@ -143,9 +143,8 @@ class TelegramNotifyTests(unittest.TestCase):
         return self.write_config(data)
 
     @patch("telegram_notify.send_message")
-    @patch("telegram_notify.submit_status")
     def test_free_message_sends_immediately_without_coalesce(
-        self, submit_mock, send_message_mock
+        self, send_message_mock
     ) -> None:
         import local_prompt
 
@@ -162,7 +161,6 @@ class TelegramNotifyTests(unittest.TestCase):
             clock=lambda: 1_700_000_000.0,
         )
 
-        submit_mock.assert_not_called()
         send_message_mock.assert_called_once_with("bot-token", "123456", "你好")
         self.assertEqual(
             local_prompt.read_prompt(state_dir / "local_prompt.txt")[1:],
@@ -322,325 +320,125 @@ class TelegramNotifyTests(unittest.TestCase):
         spawn_mock.assert_not_called()
 
 
-class NotifyBatchTests(unittest.TestCase):
+class NotifyCooldownTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         self.state_dir = Path(temporary_directory.name)
 
-    def play(self, calls: list[tuple[float, str]]) -> list[tuple[float, str]]:
-        pending = None
-        sends: list[tuple[float, str]] = []
-        for now, status in calls:
-            if pending is not None and now >= pending.deadline:
-                ready = telegram_notify.take_ready(
-                    self.state_dir,
-                    pending.token,
-                    now=pending.deadline,
-                )
-                if ready is not None:
-                    sends.append((pending.deadline, ready))
-                pending = None
-            result = telegram_notify.submit_status(
-                self.state_dir,
-                status,
-                now=now,
-            )
-            if result.immediate is not None:
-                sends.append((now, result.immediate))
-            pending = result
-        if pending is not None:
-            ready = telegram_notify.take_ready(
-                self.state_dir,
-                pending.token,
-                now=pending.deadline,
-            )
-            if ready is not None:
-                sends.append((pending.deadline, ready))
-        return sends
-
-    def test_each_call_resets_the_window_and_keeps_the_last_status(self) -> None:
-        sends = self.play(
-            [
-                (0, "AI_done"),
-                (2, "AI_wait"),
-                (4, "AI_done"),
-                (6, "AI_done"),
-                (8, "AI_wait"),
-            ]
-        )
-
-        self.assertEqual(sends, [(18, "AI_wait")])
-
-    def test_later_call_extends_the_window(self) -> None:
-        sends = self.play([(0, "AI_done"), (2.9, "AI_done")])
-
-        self.assertEqual(sends, [(12.9, "AI_done")])
-
-    def test_test_statuses_do_not_join_the_real_window(self) -> None:
-        real = telegram_notify.submit_status(self.state_dir, "AI_done", now=0)
-        trial = telegram_notify.submit_status(self.state_dir, "AI_testWait", now=1)
-
-        self.assertEqual(trial.role, "leader")
-        self.assertNotEqual(trial.token, real.token)
-        self.assertEqual(
-            telegram_notify.take_ready(self.state_dir, real.token, now=10),
-            "AI_done",
-        )
-        self.assertEqual(
-            telegram_notify.take_ready(self.state_dir, trial.token, now=11),
-            "AI_testWait",
-        )
-
-    def test_last_status_wins_inside_the_test_window(self) -> None:
-        sends = self.play([(0, "AI_testDone"), (1, "AI_testWait"), (2, "AI_testDone")])
-
-        self.assertEqual(sends, [(12, "AI_testDone")])
-
-    def test_latest_ide_is_kept_with_coalesced_status(self) -> None:
-        first = telegram_notify.submit_status(
-            self.state_dir, "AI_wait", ide="Cursor", now=0
-        )
-        telegram_notify.submit_status(
-            self.state_dir, "AI_done", ide="Codex", now=1
-        )
-
-        ready = telegram_notify.take_ready_notification(
-            self.state_dir, first.token, now=11
-        )
-
-        self.assertEqual(
-            ready,
-            telegram_notify.PendingStatus("AI_done", "Codex"),
-        )
-
-    def test_latest_project_is_kept_with_coalesced_status(self) -> None:
-        first = telegram_notify.submit_status(
+    def claim(
+        self,
+        status: str,
+        now: float,
+        *,
+        ide: str = "Codex",
+        platform_name: str = "Windows",
+        window: float = 10,
+    ) -> str | None:
+        return telegram_notify.claim_status_send(
             self.state_dir,
+            status,
+            ide=ide,
+            platform_name=platform_name,
+            now=now,
+            window=window,
+        )
+
+    def test_first_status_is_claimed_immediately_and_duplicates_do_not_extend(self) -> None:
+        self.assertIsNotNone(self.claim("AI_wait", 0))
+        self.assertIsNone(self.claim("AI_wait", 2))
+        self.assertIsNone(self.claim("AI_wait", 9))
+        self.assertIsNotNone(self.claim("AI_wait", 10))
+
+    def test_each_status_has_an_independent_timer(self) -> None:
+        statuses = (
             "AI_wait",
-            ide="Codex",
-            project="舊專案",
-            now=0,
-        )
-        telegram_notify.submit_status(
-            self.state_dir,
             "AI_done",
-            ide="Codex",
-            project="My New Project",
-            now=1,
+            "AI_fail",
+            "AI_testWait",
+            "AI_testDone",
         )
+        for status in statuses:
+            self.assertIsNotNone(self.claim(status, 0))
+        for status in statuses:
+            self.assertIsNone(self.claim(status, 3))
 
-        ready = telegram_notify.take_ready_notification(
-            self.state_dir, first.token, now=11
-        )
+    def test_platform_and_ide_split_cooldowns_but_project_does_not(self) -> None:
+        self.assertIsNotNone(self.claim("AI_done", 0))
+        self.assertIsNotNone(self.claim("AI_done", 1, platform_name="Darwin"))
+        self.assertIsNotNone(self.claim("AI_done", 1, ide="Cursor"))
+        self.assertIsNone(self.claim("AI_done", 1))
 
-        self.assertEqual(
-            ready,
-            telegram_notify.PendingStatus("AI_done", "Codex", "My New Project"),
-        )
-
-    def test_last_status_wins_when_both_statuses_share_a_window(self) -> None:
-        sends = self.play([(0, "AI_done"), (1, "AI_wait"), (2, "AI_done")])
-
-        self.assertEqual(sends, [(12, "AI_done")])
-
-    def test_only_one_leader_when_calls_arrive_together(self) -> None:
+    def test_only_one_claim_when_identical_calls_arrive_together(self) -> None:
         barrier = threading.Barrier(5)
         results = []
 
-        def worker(status: str) -> None:
+        def worker() -> None:
             barrier.wait()
-            results.append(
-                telegram_notify.submit_status(self.state_dir, status, now=0)
-            )
+            results.append(self.claim("AI_done", 0))
 
-        threads = [
-            threading.Thread(target=worker, args=(status,))
-            for status in ("AI_done", "AI_done", "AI_wait", "AI_done", "AI_wait")
-        ]
+        threads = [threading.Thread(target=worker) for _ in range(5)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
-        leaders = [result for result in results if result.role == "leader"]
-        self.assertEqual(len(leaders), 1)
-        status = telegram_notify.take_ready(
-            self.state_dir,
-            leaders[0].token,
-            now=10,
-        )
-        self.assertIn(status, telegram_notify.REAL_STATUSES)
-
-    def test_expired_batch_is_sent_once_then_a_new_window_starts(self) -> None:
-        first = telegram_notify.submit_status(self.state_dir, "AI_wait", now=0)
-        second = telegram_notify.submit_status(self.state_dir, "AI_done", now=11)
-
-        self.assertEqual(second.immediate, "AI_wait")
-        self.assertEqual(second.role, "leader")
-        self.assertIsNone(
-            telegram_notify.take_ready(self.state_dir, first.token, now=11)
-        )
-        self.assertEqual(
-            telegram_notify.take_ready(self.state_dir, second.token, now=21),
-            "AI_done",
-        )
+        self.assertEqual(sum(result is not None for result in results), 1)
 
     @patch("telegram_notify.notify")
-    def test_leader_waits_for_the_window_before_sending(self, notify_mock) -> None:
-        clock = {"now": 0.0}
-        config_file = self.write_config()
-
-        def now() -> float:
-            return clock["now"]
-
-        def sleep(seconds: float) -> None:
-            clock["now"] += seconds
-
-        telegram_notify.deliver(
-            config_file,
-            "AI_done",
-            state_dir=self.state_dir,
-            clock=now,
-            sleep=sleep,
-        )
-
-        self.assertEqual(clock["now"], 10)
-        notify_mock.assert_called_once_with(
-            config_file,
-            "AI_done",
-            ide="CLI",
-            project="未知專案",
-            state_dir=self.state_dir,
-        )
-
-    @patch("telegram_notify.notify")
-    def test_follower_returns_without_sending(self, notify_mock) -> None:
-        config_file = self.write_config()
-        first = telegram_notify.submit_status(self.state_dir, "AI_done", now=0)
-
-        telegram_notify.deliver(
-            config_file,
-            "AI_wait",
-            state_dir=self.state_dir,
-            clock=lambda: 1,
-            sleep=lambda seconds: self.fail("follower must not wait"),
-        )
-
-        notify_mock.assert_not_called()
-        self.assertEqual(
-            telegram_notify.take_ready(
-                self.state_dir,
-                first.token,
-                now=11,
-            ),
-            "AI_wait",
-        )
-
-    @patch("telegram_notify.notify")
-    def test_desktop_prompt_updates_before_telegram_waits(self, notify_mock) -> None:
-        import local_prompt
-
-        config_file = self.write_config()
-        prompt_file = self.state_dir / "local_prompt.txt"
-        clock = {"now": 1000.0}
-        nested = {"done": False}
-
-        def sleep(seconds: float) -> None:
-            seen = local_prompt.read_prompt(prompt_file)
-            self.assertIsNotNone(seen)
-            assert seen is not None
-            if not nested["done"]:
-                self.assertEqual(seen[1:], ("AI_done", "已完成"))
-                self.nested_wait(config_file, prompt_file)
-                nested["done"] = True
-            else:
-                self.assertEqual(seen[1:], ("AI_wait", "處理中"))
-            clock["now"] += seconds
-
-        telegram_notify.deliver(
-            config_file,
-            "AI_done",
-            state_dir=self.state_dir,
-            clock=lambda: clock["now"],
-            sleep=sleep,
-        )
-
-        notify_mock.assert_called_once_with(
-            config_file,
-            "AI_wait",
-            ide="CLI",
-            project="未知專案",
-            state_dir=self.state_dir,
-        )
-        self.assertEqual(clock["now"], 1011.0)
-
-    @patch("telegram_notify.notify")
-    def test_hook_returns_before_send_so_the_next_status_joins_the_window(
+    def test_first_status_sends_now_and_duplicate_only_updates_prompt(
         self, notify_mock
     ) -> None:
         import local_prompt
 
         config_file = self.write_config()
-        prompt_file = self.state_dir / "local_prompt.txt"
-        spawned = []
-
-        def boom(_seconds: float) -> None:
-            raise AssertionError("掛鉤行程不能自己睡到視窗結束")
-
-        def record(*args: object) -> None:
-            spawned.append(args)
-
-        with patch("telegram_notify.time.sleep", side_effect=boom):
-            with patch("telegram_notify._spawn_flusher", side_effect=record):
-                telegram_notify.deliver(
-                    config_file,
-                    "AI_done",
-                    state_dir=self.state_dir,
-                    clock=lambda: 0.0,
-                )
-                telegram_notify.deliver(
-                    config_file,
-                    "AI_wait",
-                    state_dir=self.state_dir,
-                    clock=lambda: 1.0,
-                )
-
-        self.assertEqual(len(spawned), 2)
-        notify_mock.assert_not_called()
-        seen = local_prompt.read_prompt(prompt_file)
-        self.assertEqual(seen[1:], ("AI_wait", "處理中"))
-        _config_file, _state_dir, token, deadline = spawned[0]
-        self.assertEqual(deadline, 10.0)
-        self.assertEqual(spawned[1][3], 11.0)
-        clock = {"now": 0.0}
-
-        def sleep(seconds: float) -> None:
-            clock["now"] += seconds
-
-        telegram_notify.flush_scheduled(
+        telegram_notify.deliver(
             config_file,
-            self.state_dir,
-            token,
-            deadline,
-            clock=lambda: clock["now"],
-            sleep=sleep,
+            "AI_done",
+            ide="Codex",
+            project="甲專案",
+            state_dir=self.state_dir,
+            clock=lambda: 0,
         )
-        self.assertEqual(clock["now"], 11.0)
+        telegram_notify.deliver(
+            config_file,
+            "AI_done",
+            ide="Codex",
+            project="乙專案",
+            state_dir=self.state_dir,
+            clock=lambda: 2,
+        )
+
         notify_mock.assert_called_once_with(
             config_file,
-            "AI_wait",
-            ide="CLI",
-            project="未知專案",
+            "AI_done",
+            ide="Codex",
+            project="甲專案",
             state_dir=self.state_dir,
         )
+        seen = local_prompt.read_prompt(self.state_dir / "local_prompt.txt")
+        self.assertEqual(seen[1:], ("AI_done", "已完成"))
+
+    @patch("telegram_notify.notify")
+    def test_failed_send_releases_claim_for_immediate_retry(self, notify_mock) -> None:
+        config_file = self.write_config()
+        notify_mock.side_effect = [OSError("network"), None]
+
+        with self.assertRaisesRegex(OSError, "network"):
+            telegram_notify.deliver(
+                config_file, "AI_done", state_dir=self.state_dir, clock=lambda: 0
+            )
+        telegram_notify.deliver(
+            config_file, "AI_done", state_dir=self.state_dir, clock=lambda: 1
+        )
+
+        self.assertEqual(notify_mock.call_count, 2)
 
     def test_window_seconds_default_constant_is_ten(self) -> None:
         self.assertEqual(telegram_notify.WINDOW_SECONDS, 10.0)
 
     @patch("telegram_notify.notify")
     def test_deliver_uses_coalesce_seconds_from_config(self, notify_mock) -> None:
-        clock = {"now": 0.0}
         config_file = self.write_config()
         Path(config_file).write_text(
             json.dumps(
@@ -658,27 +456,22 @@ class NotifyBatchTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        def sleep(seconds: float) -> None:
-            clock["now"] += seconds
-
         telegram_notify.deliver(
             config_file,
             "AI_done",
             state_dir=self.state_dir,
-            clock=lambda: clock["now"],
-            sleep=sleep,
+            clock=lambda: 0,
+        )
+        telegram_notify.deliver(
+            config_file, "AI_done", state_dir=self.state_dir, clock=lambda: 1.9
+        )
+        telegram_notify.deliver(
+            config_file, "AI_done", state_dir=self.state_dir, clock=lambda: 2
         )
 
-        self.assertEqual(clock["now"], 2)
-        notify_mock.assert_called_once_with(
-            config_file,
-            "AI_done",
-            ide="CLI",
-            project="未知專案",
-            state_dir=self.state_dir,
-        )
+        self.assertEqual(notify_mock.call_count, 2)
 
-    def test_detached_flusher_is_not_waited_on(self) -> None:
+    def test_detached_process_is_not_waited_on(self) -> None:
         target = self.state_dir / "detached.txt"
         started = time.monotonic()
         telegram_notify._detached_popen(
@@ -695,19 +488,6 @@ class NotifyBatchTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(target.read_text(encoding="utf-8"), "ok")
         self.assertLess(time.monotonic() - started, 5)
-
-    def nested_wait(self, config_file: str, prompt_file: Path) -> None:
-        import local_prompt
-
-        telegram_notify.deliver(
-            config_file,
-            "AI_wait",
-            state_dir=self.state_dir,
-            clock=lambda: 1001.0,
-            sleep=lambda waited: self.fail("follower must not wait"),
-        )
-        seen = local_prompt.read_prompt(prompt_file)
-        self.assertEqual(seen[1:], ("AI_wait", "處理中"))
 
     def write_config(self) -> str:
         temporary_file = tempfile.NamedTemporaryFile(

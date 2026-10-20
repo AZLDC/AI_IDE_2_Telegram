@@ -17,7 +17,6 @@ if sys.platform == "win32":
 
 Status = Literal["AI_wait", "AI_fail", "AI_done", "AI_testWait", "AI_testDone"]
 IDE = Literal["CLI", "Codex", "Cursor"]
-Lane = Literal["real", "test"]
 WINDOW_SECONDS = 10.0
 UNKNOWN_PROJECT = "未知專案"
 REAL_STATUSES = ("AI_wait", "AI_fail", "AI_done")
@@ -55,12 +54,6 @@ def render_message(
         .replace("{IDE}", ide)
         .replace("{project}", project or UNKNOWN_PROJECT)
     )
-
-
-def _lane(status: Status) -> Lane:
-    if status in TEST_STATUSES:
-        return "test"
-    return "real"
 
 
 @dataclass(frozen=True)
@@ -258,34 +251,8 @@ def deliver_free_message(
     )
 
 
-@dataclass(frozen=True)
-class _Batch:
-    token: str
-    deadline: float
-    status: Status
-    ide: IDE
-    project: str
-
-
-@dataclass(frozen=True)
-class PendingStatus:
-    status: Status
-    ide: IDE
-    project: str = UNKNOWN_PROJECT
-
-
-@dataclass(frozen=True)
-class SubmitResult:
-    role: Literal["leader", "follower"]
-    token: str
-    deadline: float
-    immediate: Status | None = None
-    immediate_ide: IDE = "CLI"
-    immediate_project: str = UNKNOWN_PROJECT
-
-
 class _FileLock:
-    """Lock one byte so overlapping calls share one quiet window."""
+    """Lock one byte so overlapping calls update shared state safely."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -321,123 +288,76 @@ class _FileLock:
         self._file = None
 
 
-def _batch_paths(state_dir: Path, lane: Lane = "real") -> tuple[Path, Path]:
-    name = "notify_batch" if lane == "real" else "notify_batch_test"
-    return state_dir / f"{name}.state", state_dir / f"{name}.lock"
+def _cooldown_paths(state_dir: Path) -> tuple[Path, Path]:
+    return state_dir / "notify_cooldown.state", state_dir / "notify_cooldown.lock"
 
 
-def _read_batch(path: Path) -> _Batch | None:
+def _read_cooldowns(path: Path) -> dict[str, dict[str, object]]:
     if not path.exists():
-        return None
+        return {}
     text = path.read_text(encoding="utf-8").strip()
     if not text:
-        return None
-    values = text.splitlines()
-    if len(values) == 3:
-        token, deadline, status = values
-        ide = "CLI"
-        project = UNKNOWN_PROJECT
-    elif len(values) == 4:
-        token, deadline, status, ide = values
-        project = UNKNOWN_PROJECT
-    else:
-        token, deadline, status, ide, project = values[:5]
-    if status not in STATUSES:
-        raise ValueError(f"無法辨認的通知狀態：{status}")
-    if ide not in ("CLI", "Codex", "Cursor"):
-        raise ValueError(f"無法辨認的通知來源：{ide}")
-    return _Batch(token, float(deadline), status, ide, project or UNKNOWN_PROJECT)
+        return {}
+    data = json.loads(text)
+    entries = data.get("entries", {}) if isinstance(data, dict) else {}
+    return entries if isinstance(entries, dict) else {}
 
 
-def _write_batch(path: Path, batch: _Batch) -> None:
-    path.write_text(
-        f"{batch.token}\n{batch.deadline}\n{batch.status}\n{batch.ide}\n{batch.project}\n",
+def _write_cooldowns(path: Path, entries: dict[str, dict[str, object]]) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({"version": 1, "entries": entries}, ensure_ascii=False),
         encoding="utf-8",
     )
+    temporary.replace(path)
 
 
-def _clear_batch(path: Path) -> None:
-    path.unlink(missing_ok=True)
+def _cooldown_key(platform_name: str, ide: IDE, status: Status) -> str:
+    return "\x1f".join((platform_name, ide, status))
 
 
-def submit_status(
+def claim_status_send(
     state_dir: Path,
     status: Status,
     *,
     ide: IDE = "CLI",
-    project: str = UNKNOWN_PROJECT,
+    platform_name: str | None = None,
     now: float,
     window: float = WINDOW_SECONDS,
-) -> SubmitResult:
-    """Keep the latest status and push the deadline out by `window` seconds."""
-    state_path, lock_path = _batch_paths(state_dir, _lane(status))
+) -> str | None:
+    """Reserve the first identical status in a fixed cooldown window."""
+    state_path, lock_path = _cooldown_paths(state_dir)
+    key = _cooldown_key(platform_name or current_platform(), ide, status)
     with _FileLock(lock_path):
-        current = _read_batch(state_path)
-        immediate = None
-        if current is not None and now >= current.deadline:
-            immediate = PendingStatus(current.status, current.ide, current.project)
-            _clear_batch(state_path)
-            current = None
-        if current is None:
-            batch = _Batch(uuid.uuid4().hex, now + window, status, ide, project)
-            _write_batch(state_path, batch)
-            return SubmitResult(
-                "leader",
-                batch.token,
-                batch.deadline,
-                immediate.status if immediate else None,
-                immediate.ide if immediate else "CLI",
-                immediate.project if immediate else UNKNOWN_PROJECT,
-            )
-        batch = _Batch(current.token, now + window, status, ide, project)
-        _write_batch(state_path, batch)
-        return SubmitResult(
-            "follower",
-            batch.token,
-            batch.deadline,
-            immediate.status if immediate else None,
-            immediate.ide if immediate else "CLI",
-            immediate.project if immediate else UNKNOWN_PROJECT,
-        )
+        entries = _read_cooldowns(state_path)
+        current = entries.get(key)
+        sent_at = current.get("sent_at") if isinstance(current, dict) else None
+        if isinstance(sent_at, (int, float)) and now - sent_at < window:
+            return None
+        token = uuid.uuid4().hex
+        entries[key] = {"sent_at": now, "token": token}
+        _write_cooldowns(state_path, entries)
+        return token
 
 
-def _claim(state_dir: Path, lane: Lane, token: str, now: float) -> PendingStatus | None:
-    state_path, lock_path = _batch_paths(state_dir, lane)
+def release_status_claim(
+    state_dir: Path,
+    status: Status,
+    token: str,
+    *,
+    ide: IDE = "CLI",
+    platform_name: str | None = None,
+) -> None:
+    """Release only this failed reservation so a later event can retry."""
+    state_path, lock_path = _cooldown_paths(state_dir)
+    key = _cooldown_key(platform_name or current_platform(), ide, status)
     with _FileLock(lock_path):
-        current = _read_batch(state_path)
-        if current is None or current.token != token:
-            return None
-        if now < current.deadline:
-            return None
-        _clear_batch(state_path)
-        return PendingStatus(current.status, current.ide, current.project)
-
-
-def take_ready_notification(
-    state_dir: Path, token: str, *, now: float
-) -> PendingStatus | None:
-    """Claim this window once its deadline has arrived."""
-    for lane in ("real", "test"):
-        ready = _claim(state_dir, lane, token, now)
-        if ready is not None:
-            return ready
-    return None
-
-
-def take_ready(state_dir: Path, token: str, *, now: float) -> Status | None:
-    """Compatibility wrapper returning only the claimed status."""
-    ready = take_ready_notification(state_dir, token, now=now)
-    return ready.status if ready else None
-
-
-def _peek_deadline(state_dir: Path, token: str) -> float | None:
-    for lane in ("real", "test"):
-        state_path, lock_path = _batch_paths(state_dir, lane)
-        with _FileLock(lock_path):
-            current = _read_batch(state_path)
-            if current is not None and current.token == token:
-                return current.deadline
-    return None
+        entries = _read_cooldowns(state_path)
+        current = entries.get(key)
+        if not isinstance(current, dict) or current.get("token") != token:
+            return
+        del entries[key]
+        _write_cooldowns(state_path, entries)
 
 
 @dataclass(frozen=True)
@@ -739,59 +659,6 @@ def arm_auto_delete(
     return result
 
 
-def flush_scheduled(
-    config_file: str,
-    state_dir: Path,
-    token: str,
-    deadline: float,
-    *,
-    clock: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] | None = None,
-) -> None:
-    """Send the latest status once quiet for the full window after the last update."""
-    clock = clock or time.time
-    sleep = sleep or time.sleep
-    error_log = state_dir / "notify_flush.err"
-    try:
-        while True:
-            delay = deadline - clock()
-            if delay > 0:
-                sleep(delay)
-            next_deadline = _peek_deadline(state_dir, token)
-            if next_deadline is None:
-                return
-            if next_deadline > clock():
-                deadline = next_deadline
-                continue
-            ready = take_ready_notification(state_dir, token, now=clock())
-            if ready is None:
-                return
-            try:
-                notify(
-                    config_file,
-                    ready.status,
-                    ide=ready.ide,
-                    project=ready.project,
-                    state_dir=state_dir,
-                )
-            except Exception as error:
-                error_log.write_text(
-                    f"{type(error).__name__}: {error}\n",
-                    encoding="utf-8",
-                )
-                raise
-            return
-    except Exception as error:
-        try:
-            error_log.write_text(
-                f"{type(error).__name__}: {error}\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-        raise
-
-
 def _release_parent(process: subprocess.Popen[bytes]) -> None:
     """Drop the handle without treating a still-running child as our job."""
     if process.poll() is None:
@@ -832,28 +699,6 @@ def _detached_popen(command: list[str]) -> None:
     _release_parent(process)
 
 
-def _spawn_flusher(
-    config_file: str, state_dir: Path, token: str, deadline: float
-) -> None:
-    """Ask a detached process to send this window when it closes."""
-    # Use the same interpreter as this process. pythonw hides flush errors.
-    _detached_popen(
-        [
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "--flush",
-            "--config",
-            config_file,
-            "--state-dir",
-            str(state_dir),
-            "--token",
-            token,
-            "--deadline",
-            repr(float(deadline)),
-        ]
-    )
-
-
 def deliver(
     config_file: str,
     status: Status,
@@ -863,80 +708,60 @@ def deliver(
     state_dir: Path | None = None,
     window: float | None = None,
     clock: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] | None = None,
 ) -> None:
-    """Update the desktop prompt now, and fold Telegram into one later send.
-
-    The hook process returns as soon as the status is recorded. Sleeping here
-    would make the next hook start only after this send, so every status would
-    become its own Telegram message. Each new status resets the quiet window and
-    replaces the pending Telegram status with the latest one. Every call also
-    arms a detached flusher for the new deadline, so a killed earlier waiter
-    cannot strand the batch. Quiet seconds come from config `coalesce_seconds`
-    unless `window` is passed explicitly.
-    """
+    """Update the desktop prompt, then send the first non-cooled-down status."""
     clock = clock or time.time
     directory = state_dir or Path(__file__).resolve().parent
     config = load_config(config_file)
     quiet = config.coalesce_seconds if window is None else window
     from local_prompt import write_prompt
 
+    now = clock()
     write_prompt(
         directory / "local_prompt.txt",
         status,
         config.message_for(status, ide=ide, project=project),
-        clock(),
+        now,
     )
-    result = submit_status(
+    platform_name = current_platform()
+    token = claim_status_send(
         directory,
         status,
         ide=ide,
-        project=project,
-        now=clock(),
+        platform_name=platform_name,
+        now=now,
         window=quiet,
     )
-    if result.immediate is not None:
-        notify(
-            config_file,
-            result.immediate,
-            ide=result.immediate_ide,
-            project=result.immediate_project,
-            state_dir=directory,
-        )
-    if sleep is not None:
-        if result.role == "leader":
-            flush_scheduled(
-                config_file,
-                directory,
-                result.token,
-                result.deadline,
-                clock=clock,
-                sleep=sleep,
-            )
+    if token is None:
         return
     try:
-        _spawn_flusher(config_file, directory, result.token, result.deadline)
-    except OSError:
-        if result.role == "leader":
-            flush_scheduled(
-                config_file,
-                directory,
-                result.token,
-                result.deadline,
-                clock=clock,
-            )
+        notify(
+            config_file,
+            status,
+            ide=ide,
+            project=project,
+            state_dir=directory,
+        )
+    except Exception:
+        release_status_claim(
+            directory,
+            status,
+            token,
+            ide=ide,
+            platform_name=platform_name,
+        )
+        raise
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="依設定檔 coalesce_seconds 收束後送出最後一則 AI 狀態；也可用 message 立刻送自由文字"
+        description="立即送出 AI 狀態，並依 coalesce_seconds 忽略短時間內的相同狀態；也可用 message 送自由文字"
     )
     parser.add_argument(
         "--config",
         default=str(Path(__file__).resolve().with_name("config.json")),
         help="JSON 設定檔路徑",
     )
-    parser.add_argument("--flush", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--delete-flush", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--state-dir",
@@ -968,18 +793,6 @@ def main() -> None:
         help="搭配 message 使用的自由文字",
     )
     args = parser.parse_args()
-    if args.flush and args.delete_flush:
-        parser.error("不可同時使用 --flush 與 --delete-flush")
-    if args.flush:
-        if not args.token:
-            parser.error("缺少視窗識別")
-        flush_scheduled(
-            args.config,
-            Path(args.state_dir),
-            args.token,
-            args.deadline,
-        )
-        return
     if args.delete_flush:
         if not args.token:
             parser.error("缺少清除識別")

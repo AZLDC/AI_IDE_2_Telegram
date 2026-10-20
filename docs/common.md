@@ -32,9 +32,9 @@ Windows 先執行 `py -0p` 與 `py -3 -V` 找出 Python 3 的 `python.exe` 絕�
 
 正式狀態為 `AI_wait`、`AI_fail`、`AI_done`；測試狀態為 `AI_testWait`、`AI_testDone`。
 
-本機小窗立即更新。Telegram 依 `coalesce_seconds` 收束後只傳最後一則；`auto_delete_seconds` 控制多久後刪除通知，缺欄或 `0` 表示停用。
+本機小窗每次都立即更新。Telegram 立即傳送第一則狀態；同一平台、同一 IDE 與同一狀態在 `coalesce_seconds` 內再次出現時會忽略，而且不會重新起算。`AI_wait`、`AI_done`、`AI_fail` 與各測試狀態分別計時；專案名稱不會拆分計時。`auto_delete_seconds` 控制多久後刪除通知，缺欄或 `0` 表示停用。
 
-自由文字不參與收束：
+自由文字不參與重複通知抑制：
 
 ```text
 <python> telegram_notify.py message "額外訊息"
@@ -49,7 +49,7 @@ Windows 先執行 `py -0p` 與 `py -3 -V` 找出 Python 3 的 `python.exe` 絕�
 <python> telegram_notify.py --ide Codex AI_testDone
 ```
 
-Cursor 將上面的 `Codex` 改成 `Cursor`。等待約 `coalesce_seconds` 秒後，確認 Telegram 收到含正確平台與 IDE 的完成文案；同時確認根目錄沒有 `notify_flush.err`。
+Cursor 將上面的 `Codex` 改成 `Cursor`。確認兩種狀態都立即收到；在 `coalesce_seconds` 內重複執行相同狀態時不應再次收到，時間到後再次執行才會收到。
 
 ## 常見問題
 
